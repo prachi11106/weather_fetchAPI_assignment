@@ -6,6 +6,7 @@
     <title>Async Weather Tracker</title>
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
 
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/Chart.js/4.4.1/chart.umd.min.js"></script>
     <style>
         /* ===== CSS VARIABLES — single source of truth for both themes ===== */
         :root {
@@ -266,6 +267,18 @@
                 color var(--transition);
         }
 
+        /* ===== FORECAST CHART ===== */
+        #chartCard {
+            display: none;
+        }
+        #chartCard.visible {
+            display: block;
+        }
+        #forecastChart {
+            width: 100% !important;
+            max-height: 260px;
+        }
+
         /* ===== MAP CARD ===== */
         #mapCard {
             display: none;
@@ -288,13 +301,69 @@
                 flex-direction: column;
             }
         }
+
+        /* ===== OUTFIT & ACTIVITY RECOMMENDER ===== */
+        #recommendCard {
+            display: none;
+        }
+        #recommendCard.visible {
+            display: block;
+        }
+
+        .recommend-grid {
+            display: flex;
+            flex-wrap: wrap;
+            gap: 12px;
+            margin-top: 8px;
+        }
+
+        .recommend-chip {
+            display: flex;
+            align-items: center;
+            gap: 10px;
+            background: var(--item-bg);
+            border-left: 4px solid var(--item-border);
+            border-radius: 0 10px 10px 0;
+            padding: 10px 16px;
+            flex: 1 1 200px;
+            transition: background var(--transition), border-color var(--transition);
+            animation: chipIn 0.35s ease both;
+        }
+
+        @keyframes chipIn {
+            from { opacity: 0; transform: translateY(8px); }
+            to   { opacity: 1; transform: translateY(0); }
+        }
+
+        .recommend-chip .chip-icon {
+            font-size: 1.6rem;
+            line-height: 1;
+        }
+
+        .recommend-chip .chip-text {
+            display: flex;
+            flex-direction: column;
+        }
+
+        .recommend-chip .chip-label {
+            font-size: 0.75rem;
+            color: var(--item-label);
+            text-transform: uppercase;
+            letter-spacing: 0.05em;
+        }
+
+        .recommend-chip .chip-value {
+            font-size: 0.95rem;
+            font-weight: 600;
+            color: var(--item-value);
+        }
     </style>
 </head>
 
 <body>
     <div class="container">
 
-        <h1>Async Weather Tracker</h1>
+        <h1>Weather Reporter </h1>
 
         <div style="text-align:center; margin-bottom:15px;">
             <button id="modeToggle">🌙 Dark Mode</button>
@@ -318,10 +387,22 @@
             </div>
         </div>
 
+        <div class="card" id="chartCard">
+            <h3 id="chartTitle">📈 7-Day Temperature Forecast</h3>
+            <br>
+            <canvas id="forecastChart"></canvas>
+        </div>
+
         <div class="card" id="mapCard">
             <h3 id="mapTitle">📍 Map</h3>
             <br>
             <iframe id="mapFrame" allowfullscreen></iframe>
+        </div>
+
+        <!-- OUTFIT & ACTIVITY RECOMMENDER CARD -->
+        <div class="card" id="recommendCard">
+            <h3>👗 Outfit &amp; Activity Recommendations</h3>
+            <div class="recommend-grid" id="recommendGrid"></div>
         </div>
 
     </div>
@@ -335,20 +416,129 @@
         const toggleBtn   = document.getElementById("modeToggle");
         const htmlEl      = document.documentElement;
 
-        /* ---------- WEATHER FETCH ---------- */
-        async function getWeather(city) {
+        /* ---------- FORECAST FETCH ---------- */
+        async function getForecast(city) {
             const res = await fetch(
-                `https://api.openweathermap.org/data/2.5/weather?q=${city}&appid=${API_KEY}&units=metric`
+                `https://api.openweathermap.org/data/2.5/forecast?q=${city}&appid=${API_KEY}&units=metric`
             );
-            if (!res.ok) {
-                alert("City not found");
-                throw new Error("City not found");
-            }
+            if (!res.ok) throw new Error("Forecast not found");
             return res.json();
         }
 
+        /* ---------- CHART RENDER ---------- */
+        let forecastChartInstance = null;
+
+        function renderForecastChart(forecastData, cityName) {
+            // Group by day, pick midday reading (or first of day)
+            const dailyMap = {};
+            forecastData.list.forEach(item => {
+                const date = new Date(item.dt * 1000);
+                const day  = date.toLocaleDateString("en-US", { weekday: "short", month: "short", day: "numeric" });
+                const hour = date.getHours();
+                // prefer 12:00 reading, else keep first seen
+                if (!dailyMap[day] || Math.abs(hour - 12) < Math.abs(new Date(dailyMap[day].dt * 1000).getHours() - 12)) {
+                    dailyMap[day] = item;
+                }
+            });
+
+            const days    = Object.keys(dailyMap).slice(0, 7);
+            const maxTemps = days.map(d => dailyMap[d].main.temp_max);
+            const minTemps = days.map(d => dailyMap[d].main.temp_min);
+            const avgTemps = days.map(d => dailyMap[d].main.temp);
+
+            const isDark = document.documentElement.getAttribute("data-theme") === "dark";
+            const gridColor  = isDark ? "rgba(255,255,255,0.08)" : "rgba(0,0,0,0.07)";
+            const labelColor = isDark ? "#a89cc8" : "#555";
+
+            const chartCard = document.getElementById("chartCard");
+            const ctx       = document.getElementById("forecastChart").getContext("2d");
+
+            document.getElementById("chartTitle").textContent = `📈 7-Day Temperature Forecast — ${cityName}`;
+            chartCard.classList.add("visible");
+
+            if (forecastChartInstance) forecastChartInstance.destroy();
+
+            forecastChartInstance = new Chart(ctx, {
+                type: "line",
+                data: {
+                    labels: days,
+                    datasets: [
+                        {
+                            label: "Max °C",
+                            data: maxTemps,
+                            borderColor: "#F16D34",
+                            backgroundColor: "rgba(241,109,52,0.15)",
+                            fill: false,
+                            tension: 0.4,
+                            pointRadius: 5,
+                            pointBackgroundColor: "#F16D34",
+                        },
+                        {
+                            label: "Avg °C",
+                            data: avgTemps,
+                            borderColor: isDark ? "#7c3aed" : "#854aa1",
+                            backgroundColor: isDark ? "rgba(124,58,237,0.12)" : "rgba(133,74,161,0.12)",
+                            fill: true,
+                            tension: 0.4,
+                            pointRadius: 5,
+                            pointBackgroundColor: isDark ? "#7c3aed" : "#854aa1",
+                        },
+                        {
+                            label: "Min °C",
+                            data: minTemps,
+                            borderColor: "#4ab0f1",
+                            backgroundColor: "rgba(74,176,241,0.10)",
+                            fill: false,
+                            tension: 0.4,
+                            pointRadius: 5,
+                            pointBackgroundColor: "#4ab0f1",
+                        }
+                    ]
+                },
+                options: {
+                    responsive: true,
+                    interaction: { mode: "index", intersect: false },
+                    plugins: {
+                        legend: {
+                            labels: { color: labelColor, font: { size: 13 } }
+                        },
+                        tooltip: {
+                            callbacks: {
+                                label: ctx => ` ${ctx.dataset.label}: ${ctx.parsed.y.toFixed(1)} °C`
+                            }
+                        }
+                    },
+                    scales: {
+                        x: {
+                            ticks: { color: labelColor },
+                            grid:  { color: gridColor }
+                        },
+                        y: {
+                            ticks: {
+                                color: labelColor,
+                                callback: v => v + " °C"
+                            },
+                            grid: { color: gridColor }
+                        }
+                    }
+                }
+            });
+        }
+
+        /* ---------- WEATHER FETCH ---------- */
+        async function getWeather(city) { // THIS FUNCTION TAKES A CITY NAME AS ARGUMENT AND MAKES A FETCH REQUEST TO THE OPENWEATHERMAP API TO GET THE CURRENT WEATHER DATA FOR THAT CITY. IT CONSTRUCTS THE API URL WITH THE CITY NAME, API KEY, AND UNITS (METRIC FOR CELSIUS). IF THE RESPONSE IS NOT OK (E.G., CITY NOT FOUND) IT DISPLAYS AN ALERT AND THROWS AN ERROR. IF THE RESPONSE IS OK IT PARSES THE JSON DATA AND RETURNS IT.
+            const res = await fetch(  
+                `https://api.openweathermap.org/data/2.5/weather?q=${city}&appid=${API_KEY}&units=metric`
+            );
+            if (!res.ok) {//IF THE RESPONSE IS NOT OK (E.G., CITY NOT FOUND) IT DISPLAYS AN ALERT AND THROWS AN ERROR.
+                alert("City not found");
+                throw new Error("City not found");
+            }
+            return res.json(); //IF THE RESPONSE IS OK IT PARSES THE JSON DATA AND RETURNS IT.
+        }
+
         /* ---------- UI RENDER ---------- */
-        function renderWeather(d) {
+        function renderWeather(d) { // d IS THE WEATHER DATA OBJECT RETURNED BY THE API. THIS FUNCTION UPDATES THE weatherBox ELEMENT WITH THE CURRENT WEATHER INFORMATION FOR THE CITY, INCLUDING CITY NAME, TEMPERATURE, WEATHER CONDITION, HUMIDITY, AND WIND SPEED. IT ALSO CALLS renderMap() TO DISPLAY THE LOCATION OF THE CITY ON A MAP USING THE COORDINATES PROVIDED IN THE WEATHER DATA.
             weatherBox.innerHTML = `
                 <div class="weather-item"><label>City</label><span>${d.name}, ${d.sys.country}</span></div>
                 <div class="weather-item"><label>Temperature</label><span>${d.main.temp} °C</span></div>
@@ -356,51 +546,143 @@
                 <div class="weather-item"><label>Humidity</label><span>${d.main.humidity}%</span></div>
                 <div class="weather-item"><label>Wind Speed</label><span>${d.wind.speed} m/s</span></div>
             `;
-            renderMap(d.coord.lat, d.coord.lon, d.name, d.sys.country);
+            renderMap(d.coord.lat, d.coord.lon, d.name, d.sys.country); //CALLS THE renderMap FUNCTION WITH THE LATITUDE AND LONGITUDE COORDINATES OF THE CITY TO DISPLAY ITS LOCATION ON A MAP.
+            getRecommendations(d); // GENERATES OUTFIT & ACTIVITY TIPS FROM THE WEATHER DATA — NO API NEEDED, PURE LOGIC
         }
 
         /* ---------- MAP RENDER ---------- */
         // Uses coord.lat & coord.lon already returned by the weather API — no extra fetch needed
-        function renderMap(lat, lon, city, country) {
-            const mapCard  = document.getElementById("mapCard");
-            const mapFrame = document.getElementById("mapFrame");
-            const mapTitle = document.getElementById("mapTitle");
+        function renderMap(lat, lon, city, country) { // THIS FUNCTION TAKES THE LATITUDE AND LONGITUDE COORDINATES ALONG WITH THE CITY AND COUNTRY NAME TO RENDER A MAP USING OPENSTREETMAP. IT CONSTRUCTS THE MAP URL WITH THE GIVEN COORDINATES AND SETS IT AS THE SRC OF AN IFRAME TO DISPLAY THE MAP. IT ALSO UPDATES THE MAP TITLE TO SHOW THE CITY AND COUNTRY NAME.
+            const mapCard  = document.getElementById("mapCard");//GETS THE MAP CARD ELEMENT TO MAKE IT VISIBLE AFTER SETTING THE MAP
+            const mapFrame = document.getElementById("mapFrame");//GETS THE IFRAME ELEMENT WHERE THE MAP WILL BE DISPLAYED
+            const mapTitle = document.getElementById("mapTitle");//GETS THE ELEMENT FOR THE MAP TITLE TO UPDATE IT WITH THE CITY AND COUNTRY NAME
 
-            const offset = 0.3;
+            const offset = 0.3; // Adjusts the zoom level of the map by setting how much area around the coordinates to show. Smaller offset = more zoomed in
             mapFrame.src = `https://www.openstreetmap.org/export/embed.html?bbox=${lon - offset}%2C${lat - offset}%2C${lon + offset}%2C${lat + offset}&layer=mapnik&marker=${lat}%2C${lon}`;
 
             mapTitle.textContent = `📍 ${city}, ${country}`;
             mapCard.classList.add("visible");
         }
 
+        /* ---------- OUTFIT & ACTIVITY RECOMMENDER ---------- */
+        // THIS FUNCTION TAKES THE FULL WEATHER DATA OBJECT AND USES TEMPERATURE, HUMIDITY,
+        // WIND SPEED, AND CONDITION TO GENERATE SMART OUTFIT AND ACTIVITY SUGGESTIONS
+        // USING PURE LOGIC — NO EXTERNAL API NEEDED.
+        function getRecommendations(d) {
+            const temp      = d.main.temp;                    // TEMPERATURE IN °C
+            const humidity  = d.main.humidity;                // HUMIDITY IN %
+            const wind      = d.wind.speed;                   // WIND SPEED IN m/s
+            const condition = d.weather[0].main.toLowerCase(); // e.g. "rain", "clear", "clouds"
+            const isNight   = (() => {
+                const now = Date.now() / 1000; // CURRENT TIME IN UNIX SECONDS
+                return now < d.sys.sunrise || now > d.sys.sunset; // USES API SUNRISE/SUNSET TO CHECK IF IT'S NIGHT
+            })();
+
+            const tips = []; // ARRAY OF { icon, label, value } OBJECTS TO RENDER AS CHIPS
+
+            // ── OUTFIT LOGIC — BASED ON TEMPERATURE ──────────────────────────────
+            if (temp >= 35) {
+                tips.push({ icon: "🩳", label: "Outfit", value: "Light clothes only — it's very hot!" });
+            } else if (temp >= 28) {
+                tips.push({ icon: "👕", label: "Outfit", value: "T-shirt & shorts weather" });
+            } else if (temp >= 20) {
+                tips.push({ icon: "👔", label: "Outfit", value: "Light layers recommended" });
+            } else if (temp >= 10) {
+                tips.push({ icon: "🧥", label: "Outfit", value: "Carry a jacket — it's chilly" });
+            } else {
+                tips.push({ icon: "🧣", label: "Outfit", value: "Bundle up! Coat, scarf & gloves" });
+            }
+
+            // ── RAIN / SNOW ALERT — BASED ON WEATHER CONDITION ───────────────────
+            if (["rain", "drizzle", "thunderstorm"].includes(condition)) {
+                tips.push({ icon: "☔", label: "Rain Alert", value: "Carry an umbrella — rain expected" });
+            } else if (condition === "snow") {
+                tips.push({ icon: "❄️", label: "Snow Alert", value: "Wear waterproof boots & warm layers" });
+            }
+
+            // ── WIND WARNING — BASED ON WIND SPEED ───────────────────────────────
+            if (wind >= 12) {
+                tips.push({ icon: "💨", label: "Wind Warning", value: "Strong winds — secure loose items" });
+            } else if (wind >= 7) {
+                tips.push({ icon: "🌬️", label: "Wind", value: "Windy — a windbreaker helps" });
+            }
+
+            // ── HUMIDITY TIP — BASED ON HUMIDITY % AND TEMPERATURE ───────────────
+            if (humidity >= 80 && temp >= 25) {
+                tips.push({ icon: "💧", label: "Humidity", value: "Very humid — stay hydrated, use antiperspirant" });
+            } else if (humidity <= 25) {
+                tips.push({ icon: "🫧", label: "Dry Air", value: "Low humidity — apply moisturiser & drink water" });
+            }
+
+            // ── ACTIVITY SUGGESTION — COMBINES TEMP + WIND + CONDITION ───────────
+            const goodForRun  = temp >= 10 && temp <= 28 && wind < 8 && !["rain", "thunderstorm", "snow"].includes(condition);
+            const goodForHike = temp >= 15 && temp <= 30 && humidity < 75 && wind < 10 && condition === "clear";
+            const stayIndoors = ["thunderstorm", "snow"].includes(condition) || wind >= 14 || temp >= 40 || temp <= 0;
+
+            if (stayIndoors) {
+                tips.push({ icon: "🏠", label: "Activity", value: "Best to stay indoors today" });
+            } else if (goodForHike) {
+                tips.push({ icon: "🥾", label: "Activity", value: "Perfect day for a hike or picnic!" });
+            } else if (goodForRun) {
+                tips.push({ icon: "🏃", label: "Activity", value: "Great weather for a run or walk!" });
+            } else {
+                tips.push({ icon: "🚶", label: "Activity", value: "Light outdoor activity is fine" });
+            }
+
+            // ── SUNSCREEN / NIGHT TIP — BASED ON TIME OF DAY ─────────────────────
+            if (!isNight && condition === "clear" && temp >= 25) {
+                tips.push({ icon: "🧴", label: "Sun Protection", value: "Apply sunscreen — clear & sunny!" });
+            }
+            if (isNight && temp <= 15) {
+                tips.push({ icon: "🌙", label: "Night Tip", value: "Cooler at night — bring a layer" });
+            }
+
+            // ── RENDER CHIPS INTO THE CARD ────────────────────────────────────────
+            const grid = document.getElementById("recommendGrid");
+            const card = document.getElementById("recommendCard");
+
+            // MAPS EACH TIP OBJECT TO AN ANIMATED CHIP WITH STAGGERED DELAY
+            grid.innerHTML = tips.map((t, i) => `
+                <div class="recommend-chip" style="animation-delay:${i * 0.07}s">
+                    <span class="chip-icon">${t.icon}</span>
+                    <span class="chip-text">
+                        <span class="chip-label">${t.label}</span>
+                        <span class="chip-value">${t.value}</span>
+                    </span>
+                </div>
+            `).join("");
+
+            card.classList.add("visible"); // MAKES THE CARD VISIBLE AFTER POPULATING IT
+        }
+
         /* ---------- HISTORY ---------- */
-        function saveHistory(city) {
+        function saveHistory(city) { //  READS THE EXISTING HISTORY FROM LOCAL STORAGE
             let history = JSON.parse(localStorage.getItem("weatherHistory")) || [];
-            if (!history.includes(city)) {
+            if (!history.includes(city)) { //CHECKS IF THE CITY IS ALREADY IN HISTORY TO AVOID DUPLICATES, IF NOT IT ADDS THE CITY TO THE BEGINNING OF THE HISTORY ARRAY USING unshift() 
                 history.unshift(city);
-                if (history.length > 8) history.pop();
-                localStorage.setItem("weatherHistory", JSON.stringify(history));
+                if (history.length > 8) history.pop(); // KEEPS THE HISTORY LIST TO A MAXIMUM OF 8 ITEMS ,IF TOO LONG REMOVES THE LAST ITEM (POP)
+                localStorage.setItem("weatherHistory", JSON.stringify(history)); // SAVES THE UPDATED HISTORY BACK TO LOCAL STORAGE AS A JSON STRING
             }
             showHistory();
         }
 
         function showHistory() {
-            let history = JSON.parse(localStorage.getItem("weatherHistory")) || [];
+            let history = JSON.parse(localStorage.getItem("weatherHistory")) || []; // READS THE HISTORY FROM LOCAL STORAGE AND PARSES IT AS JSON. IF NO HISTORY IS FOUND IT DEFAULTS TO AN EMPTY ARRAY.
             historyBox.innerHTML = "";
 
             if (history.length === 0) {
-                historyBox.innerHTML = `<p class="no-history">No search history yet.</p>`;
+                historyBox.innerHTML = `<p class="no-history">No search history yet.</p>`; // IF THE HISTORY ARRAY IS EMPTY IT DISPLAYS A MESSAGE SAYING "NO SEARCH HISTORY YET." 
                 return;
             }
 
-            history.forEach(city => {
-                const btn = document.createElement("button");
+            history.forEach(city => { // FOR EACH CITY IN THE HISTORY ARRAY IT CREATES A BUTTON WITH THE CITY NAME AS TEXT CONTENT. WHEN THE BUTTON IS CLICKED IT SETS THE CITY NAME IN THE INPUT FIELD AND CALLS THE search() FUNCTION TO FETCH AND DISPLAY THE WEATHER FOR THAT CITY.
+                const btn = document.createElement("button"); 
                 btn.textContent = city;
                 btn.onclick = () => { cityInput.value = city; search(city); };
                 historyBox.appendChild(btn);
             });
 
-            const clearBtn = document.createElement("button");
+            const clearBtn = document.createElement("button");//ADDS CLEAR BUTTON AT END
             clearBtn.textContent = "🗑 Clear";
             clearBtn.classList.add("clear-btn");
             clearBtn.onclick = () => { localStorage.removeItem("weatherHistory"); showHistory(); };
@@ -411,43 +693,62 @@
         async function search(city) {
             weatherBox.innerHTML = "";
             try {
-                const data = await getWeather(city);
-                renderWeather(data);
-                saveHistory(data.name);
-            } catch (error) {
+                const [data, forecast] = await Promise.all([ //RUNS MULTIPLE ASYNCHRONOUS TASKS AT SAME TIME 
+                    getWeather(city),//fetches current weather data for the specified city
+                    getForecast(city)//fetches 5-day weather forecast data for the specified city
+                ]);
+                renderWeather(data); //DISPLAY CURRENT WEATHER DATA
+                renderForecastChart(forecast, data.name); // SHOW 7-DAY FORECAST CHART FOR THAT CITY
+                saveHistory(data.name); //SAVES THE CITY NAME TO SEARCH HISTORY IN LOCAL STORAGE
+            } catch (error) {           //IF SOMETHING GOES WRONG THE CODE JUMPS HERE AND DISPLAYS THE ERROR MESSAGE IN THE WEATHER BOX
                 weatherBox.innerHTML = `<p style="color:red">${error.message}</p>`;
             }
         }
 
-        document.getElementById("searchBtn").onclick = () => {
-            const city = cityInput.value.trim();
+        document.getElementById("searchBtn").onclick = () => { //WHEN THE SEARCH BUTTON IS CLICKED THIS FUNCTION IS TRIGGERED
+            const city = cityInput.value.trim(); //.trim() REMOVES ANY EXTRA SPACES FROM THE BEGINNING AND END OF THE INPUT VALUE , READS THE TXT FROM INPUT BOX
             if (city) search(city);
         };
 
-        cityInput.addEventListener("keydown", (e) => {
+        cityInput.addEventListener("keydown", (e) => {  //KEYBOARD EVENT LISTENER FOR THE CITY INPUT FIELD, WHEN THE USER PRESSES ENTER WHILE FOCUSED ON THE INPUT FIELD THIS FUNCTION IS TRIGGERED
             if (e.key === "Enter") {
-                const city = cityInput.value.trim();
-                if (city) search(city);
+                const city = cityInput.value.trim();    
+                if (city) search(city); //GETS CITY NAME ,CALLS SEARCH(CITY)
             }
         });
 
         /* ---------- DARK MODE (clean CSS-variable approach) ---------- */
-        function applyTheme(theme) {
+        function applyTheme(theme) { //APPLIES THE CHOSEN THEME
             htmlEl.setAttribute("data-theme", theme);
-            toggleBtn.textContent = theme === "dark" ? "☀️ Light Mode" : "🌙 Dark Mode";
-            localStorage.setItem("mode", theme);
+            toggleBtn.textContent = theme === "dark" ? "☀️ Light Mode" : "🌙 Dark Mode"; //CHANGES THE BUTTON TEXT DEPENDING ON  MODE
+            localStorage.setItem("mode", theme);// SAVES THE USER'S THEME PREFERENCE IN LOCAL STORAGE SO THE THEME STAYS SAME EVEN AFTER REFRESHING OR REOPENING THE PAGE
         }
 
         toggleBtn.onclick = () => {
-            const current = htmlEl.getAttribute("data-theme");
+            const current = htmlEl.getAttribute("data-theme"); //WHEN THE TOGGLE BUTTON IS CLICKED THIS FUNCTION CHECKS THE CURRENT THEME BY READING THE data-theme ATTRIBUTE OF THE HTML ELEMENT , IF IT'S DARK IT SWITCHES TO LIGHT AND VICE VERSA BY CALLING applyTheme() WITH THE OPPOSITE THEME. 
             applyTheme(current === "dark" ? "light" : "dark");
+            // Re-render chart with updated theme colors if visible
+            if (forecastChartInstance && document.getElementById("chartCard").classList.contains("visible")) {
+                const isDark = htmlEl.getAttribute("data-theme") === "dark";
+                const gridColor  = isDark ? "rgba(255,255,255,0.08)" : "rgba(0,0,0,0.07)"; //CHART COLORS
+                const labelColor = isDark ? "#a89cc8" : "#555"; //CHARTS COLORS
+                forecastChartInstance.options.scales.x.ticks.color = labelColor; // STYLING CHART AXIS LABELS AND GRID DYNAMICALLY WHEN SWITCHING THEMES
+                forecastChartInstance.options.scales.x.grid.color  = gridColor;
+                forecastChartInstance.options.scales.y.ticks.color = labelColor;
+                forecastChartInstance.options.scales.y.grid.color  = gridColor;
+                forecastChartInstance.options.plugins.legend.labels.color = labelColor;
+                forecastChartInstance.data.datasets[1].borderColor = isDark ? "#7c3aed" : "#854aa1";
+                forecastChartInstance.data.datasets[1].backgroundColor = isDark ? "rgba(124,58,237,0.12)" : "rgba(133,74,161,0.12)";
+                forecastChartInstance.data.datasets[1].pointBackgroundColor = isDark ? "#7c3aed" : "#854aa1";
+                forecastChartInstance.update();// REDRWAW THE CHART TO APPLY THE NEW COLORS IMMEDIATELY AFTER SWITCHING THEMES
+            }
         };
 
         // Load saved preference on startup
-        applyTheme(localStorage.getItem("mode") === "dark" ? "dark" : "light");
+        applyTheme(localStorage.getItem("mode") === "dark" ? "dark" : "light"); //WHEN THE PAGE LOADS THIS LINE CHECKS LOCAL STORAGE FOR ANY SAVED THEME PREFERENCE AND APPLIES IT. IF NO PREFERENCE IS FOUND IT DEFAULTS TO LIGHT MODE.
 
         /* ---------- INIT ---------- */
-        showHistory();
+        showHistory(); // WHEN THE PAGE LOADS FOR THE FIRST TIME THIS FUNCTION CHECKS LOCAL STORAGE FOR ANY SAVED SEARCH HISTORY AND DISPLAYS IT IN THE HISTORY SECTION IF FOUND. IF NO HISTORY IS FOUND IT DISPLAYS A MESSAGE SAYING "NO SEARCH HISTORY YET."
     </script>
 </body>
 
